@@ -202,10 +202,20 @@ impl LauncherUi {
 
         ui.add_space(8.0);
 
-        // Title and author
+        // Title
         ui.label(RichText::new(&plugin.name).font(egui::FontId::new(17.0, theme::display())).color(t.ink_strong));
-        let author_line = if plugin.version.is_empty() { plugin.author.clone() } else { format!("v{} · {}", plugin.version, plugin.author) };
-        widgets::hud(ui, &author_line, t.muted);
+
+        // Author/version and source link
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                widgets::hud_link(ui, tl!("Source"), &plugin.source_link());
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let author_line =
+                        if plugin.version.is_empty() { plugin.author.clone() } else { format!("v{} · {}", plugin.version, plugin.author) };
+                    widgets::hud(ui, &author_line, t.muted);
+                });
+            });
+        });
 
         ui.add_space(6.0);
 
@@ -246,10 +256,6 @@ impl LauncherUi {
                 {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                 }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    widgets::hud_link(ui, tl!("Source"), &plugin.source_link());
-                });
             });
         });
     }
