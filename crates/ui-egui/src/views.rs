@@ -86,6 +86,16 @@ impl LauncherUi {
             widgets::tag(ui, tl!("Launcher"), t.invert_bg, t.invert_fg);
             ui.add_space(12.0);
             widgets::hud(ui, tl!("Craft App Suite"), t.muted);
+            ui.add_space(12.0);
+            widgets::rule(ui, h);
+            ui.add_space(6.0);
+            if widgets::nav_link(ui, tl!("Apps"), tl!("Craft App Suite"), h, self.active_tab == crate::app::ViewTab::Apps).clicked() {
+                self.active_tab = crate::app::ViewTab::Apps;
+            }
+            if widgets::nav_link(ui, tl!("Plug-ins"), tl!("ArtCraft Store plug-ins"), h, self.active_tab == crate::app::ViewTab::Plugins).clicked() {
+                self.active_tab = crate::app::ViewTab::Plugins;
+            }
+            widgets::rule(ui, h);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if bar == TitleBar::Custom {
                     widgets::window_buttons(ui, h);
@@ -102,17 +112,19 @@ impl LauncherUi {
                 }
                 ui.add_space(6.0);
                 widgets::rule(ui, h);
-                ui.add_space(6.0);
-                // Right to left: Table, then Grid, so they read Grid · Table.
-                for (mode, label, tip) in
-                    [(ViewMode::Table, tl!("Table"), tl!("Show apps as a table")), (ViewMode::Grid, tl!("Grid"), tl!("Show apps as cards"))]
-                {
-                    if widgets::nav_link(ui, label, tip, h, self.settings.view == mode).clicked() {
-                        self.settings.view = mode;
+                if self.active_tab == crate::app::ViewTab::Apps {
+                    ui.add_space(6.0);
+                    // Right to left: Table, then Grid, so they read Grid · Table.
+                    for (mode, label, tip) in
+                        [(ViewMode::Table, tl!("Table"), tl!("Show apps as a table")), (ViewMode::Grid, tl!("Grid"), tl!("Show apps as cards"))]
+                    {
+                        if widgets::nav_link(ui, label, tip, h, self.settings.view == mode).clicked() {
+                            self.settings.view = mode;
+                        }
                     }
+                    ui.add_space(6.0);
+                    widgets::rule(ui, h);
                 }
-                ui.add_space(6.0);
-                widgets::rule(ui, h);
             });
         });
     }
@@ -796,6 +808,11 @@ impl LauncherUi {
         widgets::more_menu(ui, |ui| {
             if entry.release().is_some() && ui.button(tl!("Release notes")).clicked() {
                 self.dialog = Some(Dialog::Notes(id.clone()));
+                ui.close();
+            }
+            if ui.button(tl!("Plug-ins…")).clicked() {
+                self.active_tab = crate::app::ViewTab::Plugins;
+                self.plugin_app_filter = id.clone();
                 ui.close();
             }
             // Only where Install would download: an up-to-date app would be reinstalled.

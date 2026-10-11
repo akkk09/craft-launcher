@@ -873,3 +873,37 @@ fn custom_title_bar_has_window_buttons() {
     let closes = h.output().viewport_output.values().any(|v| v.commands.contains(&egui::ViewportCommand::Close));
     assert!(closes, "the close button asks the window to close (the shell decides whether that hides it to the tray)");
 }
+
+#[test]
+fn plugins_tab_navigates_and_syncs_catalog() {
+    let mut ev = events();
+    let sample_catalog = artcraft_launcher_core::plugins::PluginCatalog {
+        schema_version: 1,
+        plugins: vec![artcraft_launcher_core::plugins::Plugin {
+            id: "filmcraft-lut-pack".into(),
+            name: "FilmCraft Cinema LUTs".into(),
+            app: "filmcraft".into(),
+            version: "1.2.0".into(),
+            author: "ArtCraft Team".into(),
+            description: "Pro film-grading 3D LUTs for FilmCraft.".into(),
+            tags: vec!["lut".into(), "color".into()],
+            kind: "preset".into(),
+            artifact: Some("cinema-luts.cube".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    ev.push(Event::PluginsSynced { catalog: Some(sample_catalog), installed: vec![], error: None });
+    let (mut h, sent) = harness_with(ev, ViewMode::Grid, egui::Theme::Dark, true, 1.0);
+    h.run_steps(4);
+    // Click on Plug-ins nav tab in the header
+    h.get_by_label("Plug-ins").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("ArtCraft Store").is_some());
+    assert!(h.query_by_label("FilmCraft Cinema LUTs").is_some());
+    // Clicking Install sends Command::InstallPlugin
+    sent.borrow_mut().clear();
+    h.get_by_label("Install").click();
+    h.run_steps(2);
+    assert_eq!(*sent.borrow(), [Command::InstallPlugin { plugin_id: "filmcraft-lut-pack".into() }]);
+}

@@ -70,6 +70,14 @@ pub(crate) enum Dialog {
     LauncherUpdate(artcraft_launcher_core::Release),
 }
 
+/// The active tab in the launcher: Apps (suite) or Plug-ins (ArtCraft Store).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewTab {
+    #[default]
+    Apps,
+    Plugins,
+}
+
 pub struct LauncherUi {
     pub(crate) backend: Box<dyn Backend>,
     pub settings: Settings,
@@ -91,6 +99,14 @@ pub struct LauncherUi {
     pub(crate) search: String,
     pub(crate) toasts: Vec<Toast>,
     pub(crate) dialog: Option<Dialog>,
+    pub active_tab: ViewTab,
+    pub(crate) plugin_catalog: Option<artcraft_launcher_core::plugins::PluginCatalog>,
+    pub(crate) installed_plugins: std::collections::HashMap<String, artcraft_launcher_core::plugins::InstalledPlugin>,
+    pub(crate) syncing_plugins: bool,
+    pub(crate) plugin_search: String,
+    pub(crate) plugin_app_filter: String,
+    pub(crate) plugin_kind_filter: String,
+    pub(crate) plugin_installing: std::collections::HashSet<String>,
     started: bool,
     applied_theme: Option<theme::ThemeChoice>,
     /// Fonts registered with `set_fonts` only exist from the next frame on; drawing with the named
@@ -147,6 +163,14 @@ impl LauncherUi {
             search: String::new(),
             toasts: Vec::new(),
             dialog: None,
+            active_tab: ViewTab::Apps,
+            plugin_catalog: None,
+            installed_plugins: std::collections::HashMap::new(),
+            syncing_plugins: false,
+            plugin_search: String::new(),
+            plugin_app_filter: String::new(),
+            plugin_kind_filter: String::new(),
+            plugin_installing: std::collections::HashSet::new(),
             started: false,
             applied_theme: None,
             fonts_ready: false,
@@ -178,6 +202,7 @@ impl LauncherUi {
         self.auto_update_attempted.clear();
         self.backend.send(Command::CheckForUpdates { force: true });
         self.backend.send(Command::Detect);
+        self.backend.send(Command::SyncPlugins);
         self.last_detect = self.backend.now();
     }
 
@@ -212,6 +237,7 @@ impl LauncherUi {
         if !self.started {
             self.started = true;
             self.backend.send(Command::CheckForUpdates { force: false });
+            self.backend.send(Command::SyncPlugins);
         }
         let now = self.backend.now();
         if self.last_detect == 0 {
@@ -350,6 +376,29 @@ impl LauncherUi {
                 self.rate_limited_until = rate_limited_until;
                 true
             }
+            Event::PluginsSynced { catalog, installed, error } => {
+                self.syncing_plugins = false;
+                if let Some(cat) = catalog {
+                    self.plugin_catalog = Some(cat);
+                }
+                let mut map = std::collections::HashMap::new();
+                for p in installed {
+                    map.insert(p.id.clone(), p);
+                }
+                self.installed_plugins = map;
+                if let Some(err) = error {
+                    self.toast(ctx, err, true);
+                }
+                true
+            }
+            Event::PluginJobFinished { plugin_id, result } => {
+                self.plugin_installing.remove(&plugin_id);
+                match result {
+                    Ok(msg) => self.toast(ctx, msg, false),
+                    Err(e) => self.toast(ctx, e, true),
+                }
+                true
+            }
         }
     }
 
@@ -456,30 +505,35 @@ impl LauncherUi {
             .show(ui, |ui| self.footer(ui));
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(tokens.bg).inner_margin(egui::Margin { left: 20, right: 20, top: 18, bottom: 0 }))
-            .show(ui, |ui| {
-                self.toolbar(ui);
-                ui.add_space(18.0);
-                let ids = self.visible_ids();
-                // The table is wider than a narrow window: let it scroll sideways too.
-                let scroll = match self.settings.view {
-                    ViewMode::Grid => egui::ScrollArea::vertical(),
-                    ViewMode::Table => egui::ScrollArea::both(),
-                };
-                scroll.auto_shrink(false).show(ui, |ui| {
-                    if ids.is_empty() {
-                        ui.add_space(40.0);
-                        ui.vertical_centered(|ui| {
-                            crate::widgets::hud(ui, tl!("No apps match"), tokens.muted);
-                        });
-                    } else {
-                        match self.settings.view {
-                            ViewMode::Grid => self.grid(ui, &ids),
-                            ViewMode::Table => self.table(ui, &ids),
+            .show(ui, |ui| match self.active_tab {
+                ViewTab::Apps => {
+                    self.toolbar(ui);
+                    ui.add_space(18.0);
+                    let ids = self.visible_ids();
+                    // The table is wider than a narrow window: let it scroll sideways too.
+                    let scroll = match self.settings.view {
+                        ViewMode::Grid => egui::ScrollArea::vertical(),
+                        ViewMode::Table => egui::ScrollArea::both(),
+                    };
+                    scroll.auto_shrink(false).show(ui, |ui| {
+                        if ids.is_empty() {
+                            ui.add_space(40.0);
+                            ui.vertical_centered(|ui| {
+                                crate::widgets::hud(ui, tl!("No apps match"), tokens.muted);
+                            });
+                        } else {
+                            match self.settings.view {
+                                ViewMode::Grid => self.grid(ui, &ids),
+                                ViewMode::Table => self.table(ui, &ids),
+                            }
                         }
-                    }
-                    self.trademark_notice(ui);
-                    ui.add_space(16.0);
-                });
+                        self.trademark_notice(ui);
+                        ui.add_space(16.0);
+                    });
+                }
+                ViewTab::Plugins => {
+                    self.plugins_view(ui);
+                }
             });
         self.dialogs(&ctx, host);
         self.draw_toasts(&ctx);

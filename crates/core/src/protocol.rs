@@ -43,6 +43,20 @@ pub enum Command {
     },
     /// Download the newer ArtCraft Launcher, put it in place and restart into it.
     UpdateLauncher,
+    /// Sync plug-ins catalog from the ArtCraft Store and detect installed plug-ins.
+    SyncPlugins,
+    /// Install a plug-in from the ArtCraft Store.
+    InstallPlugin {
+        plugin_id: String,
+    },
+    /// Remove an installed plug-in.
+    UninstallPlugin {
+        plugin_id: String,
+    },
+    /// Reveal the plug-in file in the system file manager.
+    RevealPlugin {
+        plugin_id: String,
+    },
     /// Change how the backend behaves.
     Configure(BackendOptions),
 }
@@ -194,6 +208,17 @@ pub enum Event {
         source: Source,
         /// GitHub refused more API calls until this time (Unix seconds).
         rate_limited_until: Option<i64>,
+    },
+    /// Plug-in catalog and installed plug-ins updated from the ArtCraft Store.
+    PluginsSynced {
+        catalog: Option<crate::plugins::PluginCatalog>,
+        installed: Vec<crate::plugins::InstalledPlugin>,
+        error: Option<String>,
+    },
+    /// A plug-in install or removal job finished.
+    PluginJobFinished {
+        plugin_id: String,
+        result: Result<String, String>,
     },
 }
 

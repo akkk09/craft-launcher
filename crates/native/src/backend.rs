@@ -77,6 +77,10 @@ struct Shared {
     feed_ok_at: Mutex<Option<i64>>,
     /// How often ArtCraft's API may be called.
     feed_throttle: Mutex<FeedThrottle>,
+    /// ArtCraft Store plug-in catalog.
+    plugin_catalog: Mutex<Option<artcraft_launcher_core::plugins::PluginCatalog>>,
+    /// A sync pass for the plug-in store is in progress.
+    syncing_plugins: AtomicBool,
 }
 
 impl Shared {
@@ -131,10 +135,13 @@ impl NativeBackend {
             feed_failures: Mutex::new(0),
             feed_ok_at: Mutex::new(None),
             feed_throttle: Mutex::new(FeedThrottle::load(&paths.feed_throttle(), crate::now())),
+            plugin_catalog: Mutex::new(None),
+            syncing_plugins: AtomicBool::new(false),
             last_check: Mutex::new(None),
         });
         let backend = Self { shared, paths, http, source, platform: native_platform(), self_install: crate::self_update::current() };
         backend.replay_cache();
+        backend.replay_plugin_cache();
         backend.detect_all();
         backend
     }
@@ -160,6 +167,125 @@ impl NativeBackend {
         }
         if let Some(f) = feed {
             self.shared.emit(Event::Notices { announcements: f.announcements, alerts: f.alerts });
+        }
+    }
+
+    fn replay_plugin_cache(&self) {
+        if let Ok(text) = std::fs::read_to_string(self.paths.plugin_catalog_cache())
+            && let Some(cat) = artcraft_launcher_core::plugins::PluginCatalog::parse(&text)
+        {
+            let installed = crate::plugins::scan_installed_plugins(&cat);
+            *self.shared.plugin_catalog.lock().unwrap_or_else(PoisonError::into_inner) = Some(cat.clone());
+            self.shared.emit(Event::PluginsSynced { catalog: Some(cat), installed, error: None });
+        }
+    }
+
+    pub fn sync_plugins(&self) {
+        if self.shared.syncing_plugins.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let shared = Arc::clone(&self.shared);
+        let paths = self.paths.clone();
+        let http = self.http.clone();
+        std::thread::spawn(move || {
+            let fetch_result = match &http {
+                Some(h) => h.get_text(artcraft_launcher_core::plugins::STORE_CATALOG_URL),
+                None => Err("HTTPS unavailable".into()),
+            };
+            let (catalog, error) = match fetch_result {
+                Ok(Some(text)) => {
+                    if let Err(e) = crate::paths::write_atomic(&paths.plugin_catalog_cache(), text.as_bytes()) {
+                        log::warn!("plugin catalog cache: {e}");
+                    }
+                    match artcraft_launcher_core::plugins::PluginCatalog::parse(&text) {
+                        Some(cat) => (Some(cat), None),
+                        None => (None, Some("malformed store catalog JSON".to_string())),
+                    }
+                }
+                Ok(None) => (None, Some("store catalog not found (HTTP 404)".to_string())),
+                Err(e) => {
+                    let cached = std::fs::read_to_string(paths.plugin_catalog_cache())
+                        .ok()
+                        .and_then(|s| artcraft_launcher_core::plugins::PluginCatalog::parse(&s));
+                    (cached, Some(format!("Could not reach ArtCraft Store: {e}")))
+                }
+            };
+
+            let installed = catalog.as_ref().map(crate::plugins::scan_installed_plugins).unwrap_or_default();
+            if let Some(cat) = &catalog {
+                *shared.plugin_catalog.lock().unwrap_or_else(PoisonError::into_inner) = Some(cat.clone());
+            }
+            shared.syncing_plugins.store(false, Ordering::SeqCst);
+            shared.emit(Event::PluginsSynced { catalog, installed, error });
+        });
+    }
+
+    pub fn install_plugin(&self, plugin_id: &str) {
+        let cat_opt = self.shared.plugin_catalog.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let Some(cat) = cat_opt else {
+            self.shared.emit(Event::PluginJobFinished { plugin_id: plugin_id.to_string(), result: Err("Store catalog not loaded yet".into()) });
+            return;
+        };
+        let Some(plugin) = cat.by_id(plugin_id).cloned() else {
+            self.shared.emit(Event::PluginJobFinished { plugin_id: plugin_id.to_string(), result: Err("Plug-in not found in store catalog".into()) });
+            return;
+        };
+
+        let shared = Arc::clone(&self.shared);
+        let http = match self.http.clone() {
+            Some(h) => h,
+            None => {
+                self.shared.emit(Event::PluginJobFinished { plugin_id: plugin_id.to_string(), result: Err("HTTPS unavailable".into()) });
+                return;
+            }
+        };
+        let plugin_id = plugin_id.to_string();
+        std::thread::spawn(move || match crate::plugins::install_plugin(&http, &plugin) {
+            Ok(_) => {
+                let installed = crate::plugins::scan_installed_plugins(&cat);
+                shared.emit(Event::PluginJobFinished { plugin_id, result: Ok(format!("Installed {}", plugin.name)) });
+                shared.emit(Event::PluginsSynced { catalog: Some(cat), installed, error: None });
+            }
+            Err(e) => {
+                shared.emit(Event::PluginJobFinished { plugin_id, result: Err(e) });
+            }
+        });
+    }
+
+    pub fn uninstall_plugin(&self, plugin_id: &str) {
+        let cat_opt = self.shared.plugin_catalog.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let Some(cat) = cat_opt else {
+            return;
+        };
+        let Some(plugin) = cat.by_id(plugin_id).cloned() else {
+            return;
+        };
+        let shared = Arc::clone(&self.shared);
+        let plugin_id = plugin_id.to_string();
+        std::thread::spawn(move || match crate::plugins::uninstall_plugin(&plugin) {
+            Ok(()) => {
+                let installed = crate::plugins::scan_installed_plugins(&cat);
+                shared.emit(Event::PluginJobFinished { plugin_id, result: Ok(format!("Removed {}", plugin.name)) });
+                shared.emit(Event::PluginsSynced { catalog: Some(cat), installed, error: None });
+            }
+            Err(e) => {
+                shared.emit(Event::PluginJobFinished { plugin_id, result: Err(e) });
+            }
+        });
+    }
+
+    pub fn reveal_plugin(&self, plugin_id: &str) {
+        let cat_opt = self.shared.plugin_catalog.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let Some(cat) = cat_opt else {
+            return;
+        };
+        let Some(plugin) = cat.by_id(plugin_id).cloned() else {
+            return;
+        };
+        if let Some(path) = crate::plugins::plugin_file_path(&plugin) {
+            let parent = path.parent().unwrap_or(&path);
+            let target = if path.exists() { &path } else { parent };
+            let _ = crate::process::reveal(target);
         }
     }
 
@@ -844,6 +970,10 @@ impl Backend for NativeBackend {
                 }
             }
             Command::UpdateLauncher => self.update_launcher(),
+            Command::SyncPlugins => self.sync_plugins(),
+            Command::InstallPlugin { plugin_id } => self.install_plugin(&plugin_id),
+            Command::UninstallPlugin { plugin_id } => self.uninstall_plugin(&plugin_id),
+            Command::RevealPlugin { plugin_id } => self.reveal_plugin(&plugin_id),
             Command::Configure(options) => {
                 let changed_pre = {
                     let mut o = self.shared.options.lock().unwrap_or_else(PoisonError::into_inner);
@@ -944,6 +1074,8 @@ mod tests {
             feed_failures: Mutex::new(0),
             feed_ok_at: Mutex::new(None),
             feed_throttle: Mutex::new(FeedThrottle::new()),
+            plugin_catalog: Mutex::new(None),
+            syncing_plugins: AtomicBool::new(false),
         }
     }
 

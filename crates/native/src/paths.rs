@@ -46,6 +46,11 @@ impl Paths {
         self.cache.join("feed-throttle.json")
     }
 
+    /// Saved ArtCraft Store plug-in catalog.
+    pub fn plugin_catalog_cache(&self) -> PathBuf {
+        self.cache.join("plugin-catalog.json")
+    }
+
     pub fn manifest(&self) -> PathBuf {
         self.data.join("installed.json")
     }

@@ -24,12 +24,13 @@ pub mod i18n;
 pub mod icons;
 pub mod model;
 mod notes;
+mod plugins_view;
 pub mod settings;
 pub mod theme;
 mod views;
 mod widgets;
 
-pub use app::{Host, LauncherUi, TitleBar};
+pub use app::{Host, LauncherUi, TitleBar, ViewTab};
 pub use i18n::{
     Lang, LangInfo, current, detect_system_lang_in_background, fmt, has, lang_from_tag, message, msg, set_current, set_system_locales, system_lang,
     t, t_id, tn, tr, tr_ctx, tr_id, trn,

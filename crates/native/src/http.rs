@@ -160,6 +160,16 @@ impl Http {
         }
     }
 
+    /// GET binary content (following redirects) up to `limit` bytes.
+    pub fn get_binary(&self, url: &str, limit: u64) -> Result<Vec<u8>, String> {
+        let mut resp = self.small.get(url).call().map_err(|e| format!("couldn't reach {} ({e})", host(url)))?;
+        match resp.status().as_u16() {
+            200 => resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| format!("failed reading data ({e})")),
+            404 => Err("file not found (HTTP 404)".into()),
+            s => Err(format!("{} answered HTTP {s}", host(url))),
+        }
+    }
+
     /// Where `url` redirects to, without following it.
     pub fn redirect_target(&self, url: &str) -> Result<Option<String>, String> {
         let resp = self.no_redirect.head(url).call().map_err(|e| format!("couldn't reach {} ({e})", host(url)))?;

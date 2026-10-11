@@ -163,6 +163,44 @@ impl WebBackend {
             ctx.request_repaint();
         });
     }
+
+    fn sync_plugins(&self) {
+        let events = self.events.clone();
+        let ctx = self.ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let cat = fetch_store_catalog().await;
+            let (catalog, error) = match cat {
+                Ok(c) => (Some(c), None),
+                Err(e) => (None, Some(e)),
+            };
+            events.borrow_mut().push(Event::PluginsSynced { catalog, installed: Vec::new(), error });
+            ctx.request_repaint();
+        });
+    }
+}
+
+async fn fetch_store_catalog() -> Result<artcraft_launcher_core::plugins::PluginCatalog, String> {
+    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
+    let init = web_sys::RequestInit::new();
+    init.set_method("GET");
+    init.set_mode(web_sys::RequestMode::Cors);
+    let request = web_sys::Request::new_with_str_and_init(artcraft_launcher_core::plugins::STORE_CATALOG_URL, &init)
+        .map_err(|_| "failed to create request".to_string())?;
+    let _ = request.headers().set("Accept", "application/json");
+    let resp: web_sys::Response = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|_| "network request failed".to_string())?
+        .dyn_into()
+        .map_err(|_| "unexpected response".to_string())?;
+    if resp.status() != 200 {
+        return Err(format!("store returned HTTP {}", resp.status()));
+    }
+    let text = JsFuture::from(resp.text().map_err(|_| "failed reading text".to_string())?)
+        .await
+        .map_err(|_| "failed awaiting text".to_string())?
+        .as_string()
+        .ok_or_else(|| "empty response".to_string())?;
+    artcraft_launcher_core::plugins::PluginCatalog::parse(&text).ok_or_else(|| "malformed catalog json".to_string())
 }
 
 /// The latest release; `Err(Some(reset))` when rate-limited, `Err(None)` on other failures.
@@ -225,7 +263,11 @@ fn visitor_platform() -> Option<Platform> {
 impl Backend for WebBackend {
     fn send(&mut self, command: Command) {
         match command {
-            Command::CheckForUpdates { .. } => self.check(),
+            Command::CheckForUpdates { .. } => {
+                self.check();
+                self.sync_plugins();
+            }
+            Command::SyncPlugins => self.sync_plugins(),
             Command::Configure(o) => {
                 let changed = o.prereleases != self.prereleases;
                 self.prereleases = o.prereleases;
